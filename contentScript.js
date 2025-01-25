@@ -71,4 +71,4 @@ const getTime = t => {
   return date.toISOString().substr(11, 8);
 };
 
-// Have to update
+// Have to update... Soon
