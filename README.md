@@ -30,9 +30,6 @@ A Chrome extension to bookmark specific timestamps in YouTube videos and access 
 - `tabs`: Access the active tab's URL.
 - `storage`: Save and retrieve bookmarks.
 
-## License
-This project is licensed under the MIT License.
-
 ---
 
 Enjoy your YouTube bookmarking experience!
