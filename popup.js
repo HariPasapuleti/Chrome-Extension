@@ -31,10 +31,8 @@ const viewBookmarks = (currentBookmarks=[]) => {
       addNewBookmark(bookmarksElement, bookmark);
     }
   } else {
-    bookmarksElement.innerHTML = '<i class="row">No bookmarks to show</i>';
+    bookmarksElement.innerHTML = '<div class="title">No bookmarks to show</div>';
   }
-
-  return;
 };
 
 const onPlay = async e => {
@@ -44,25 +42,70 @@ const onPlay = async e => {
   chrome.tabs.sendMessage(activeTab.id, {
     type: "PLAY",
     value: bookmarkTime,
+  }, () => {
+    // Close popup after sending play message
+    window.close();
   });
 };
 
 const onDelete = async e => {
-  const activeTab = await getActiveTabURL();
-  const bookmarkTime = e.target.parentNode.parentNode.getAttribute("timestamp");
-  const bookmarkElementToDelete = document.getElementById(
-    "bookmark-" + bookmarkTime
-  );
+  try {
+    const activeTab = await getActiveTabURL();
+    const bookmarkTime = e.target.parentNode.parentNode.getAttribute("timestamp");
+    const videoId = new URL(activeTab.url).searchParams.get("v");
+    
+    if (!videoId) {
+      console.error("No video ID found");
+      return;
+    }
 
-  bookmarkElementToDelete.parentNode.removeChild(bookmarkElementToDelete);
+    // Get current bookmarks
+    const data = await new Promise((resolve) => {
+      chrome.storage.sync.get([videoId], (result) => {
+        resolve(result);
+      });
+    });
 
-  chrome.tabs.sendMessage(activeTab.id, {
-    type: "DELETE",
-    value: bookmarkTime,
-  }, viewBookmarks);
+    if (data[videoId]) {
+      const currentBookmarks = JSON.parse(data[videoId]);
+      const updatedBookmarks = currentBookmarks.filter(bookmark => bookmark.time !== parseFloat(bookmarkTime));
+
+      // Save updated bookmarks
+      await new Promise((resolve) => {
+        chrome.storage.sync.set({
+          [videoId]: JSON.stringify(updatedBookmarks)
+        }, resolve);
+      });
+
+      // Update UI
+      const bookmarkElementToDelete = document.getElementById("bookmark-" + bookmarkTime);
+      if (bookmarkElementToDelete) {
+        bookmarkElementToDelete.parentNode.removeChild(bookmarkElementToDelete);
+      }
+
+      // If no bookmarks left, show message
+      if (updatedBookmarks.length === 0) {
+        const bookmarksElement = document.getElementById("bookmarks");
+        bookmarksElement.innerHTML = '<div class="title">No bookmarks to show</div>';
+      }
+
+      // Notify content script
+      try {
+        await chrome.tabs.sendMessage(activeTab.id, {
+          type: "DELETE",
+          value: bookmarkTime,
+          videoId: videoId
+        });
+      } catch (error) {
+        console.log("Content script not ready, but bookmark deleted successfully");
+      }
+    }
+  } catch (error) {
+    console.error("Error deleting bookmark:", error);
+  }
 };
 
-const setBookmarkAttributes =  (src, eventListener, controlParentElement) => {
+const setBookmarkAttributes = (src, eventListener, controlParentElement) => {
   const controlElement = document.createElement("img");
 
   controlElement.src = "assets/" + src + ".png";
@@ -73,21 +116,72 @@ const setBookmarkAttributes =  (src, eventListener, controlParentElement) => {
 
 document.addEventListener("DOMContentLoaded", async () => {
   const activeTab = await getActiveTabURL();
-  const queryParameters = activeTab.url.split("?")[1];
-  const urlParameters = new URLSearchParams(queryParameters);
+  const container = document.getElementsByClassName("container")[0];
 
-  const currentVideo = urlParameters.get("v");
+  if (activeTab.url.includes("youtube.com/watch")) {
+    // Extract video ID from URL using regex
+    const videoIdMatch = activeTab.url.match(/[?&]v=([^&]+)/);
+    const currentVideo = videoIdMatch ? videoIdMatch[1] : null;
+    
+    console.log("Current Video ID in Popup:", currentVideo);
 
-  if (activeTab.url.includes("youtube.com/watch") && currentVideo) {
-    chrome.storage.sync.get([currentVideo], (data) => {
-      const currentVideoBookmarks = data[currentVideo] ? JSON.parse(data[currentVideo]) : [];
+    if (currentVideo) {
+      // Function to load and display bookmarks
+      const loadBookmarks = () => {
+        console.log("Loading bookmarks for video:", currentVideo);
+        const bookmarksElement = document.getElementById("bookmarks");
+        
+        if (!bookmarksElement) {
+          console.error("Bookmarks element not found");
+          return;
+        }
 
-      viewBookmarks(currentVideoBookmarks);
-    });
+        chrome.storage.sync.get([currentVideo], (data) => {
+          if (chrome.runtime.lastError) {
+            console.error("Error loading bookmarks:", chrome.runtime.lastError);
+            bookmarksElement.innerHTML = '<div class="title">Error loading bookmarks</div>';
+            return;
+          }
+          
+          console.log("Raw storage data:", data);
+          let currentVideoBookmarks = [];
+          
+          try {
+            if (data[currentVideo]) {
+              currentVideoBookmarks = JSON.parse(data[currentVideo]);
+              console.log("Parsed bookmarks:", currentVideoBookmarks);
+              
+              if (Array.isArray(currentVideoBookmarks) && currentVideoBookmarks.length > 0) {
+                viewBookmarks(currentVideoBookmarks);
+              } else {
+                bookmarksElement.innerHTML = '<div class="title">No bookmarks to show</div>';
+              }
+            } else {
+              console.log("No bookmarks found for this video");
+              bookmarksElement.innerHTML = '<div class="title">No bookmarks to show</div>';
+            }
+          } catch (error) {
+            console.error("Error parsing bookmarks:", error);
+            bookmarksElement.innerHTML = '<div class="title">Error parsing bookmarks</div>';
+          }
+        });
+      };
+
+      // Initial load
+      loadBookmarks();
+
+      // Listen for bookmark updates
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message.type === "BOOKMARKS_UPDATED" && message.videoId === currentVideo) {
+          console.log("Received bookmark update notification");
+          loadBookmarks();
+        }
+      });
+    } else {
+      container.innerHTML = '<div class="title">Could not extract video ID.</div>';
+    }
   } else {
-    const container = document.getElementsByClassName("container")[0];
-
-    container.innerHTML = '<div class="title">This is not a youtube video page.</div>';
+    container.innerHTML = '<div class="title">This is not a YouTube video page.</div>';
   }
 });
 
